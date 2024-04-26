@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 or BSD-3-Clause
 mod vhu_media;
+mod vhu_media_thread;
 
 use std::{
     path::PathBuf,
@@ -11,7 +12,6 @@ use log::debug;
 use thiserror::Error as ThisError;
 use vhost_user_backend::VhostUserDaemon;
 use vhu_media::VuMediaBackend;
-use virtio_media::devices::V4l2ProxyDevice;
 use vm_memory::{GuestMemoryAtomic, GuestMemoryMmap};
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;

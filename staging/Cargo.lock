@@ -78,6 +78,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b34d609dfbaf33d6889b2b7106d3ca345eacad44200913df5ba02bfd31d2ba9"
 
 [[package]]
+name = "async-mutex"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "479db852db25d9dbf6204e6cb6253698f175c15726470f78af0d918e99d6156e"
+dependencies = [
+ "event-listener",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -212,6 +221,12 @@ dependencies = [
  "libc",
  "windows-sys",
 ]
+
+[[package]]
+name = "event-listener"
+version = "2.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0206175f82b8d6bf6652ff7d71a1e27fd2e4efde587fd368662814d6ec1d9ce0"
 
 [[package]]
 name = "fastrand"
@@ -681,6 +696,19 @@ checksum = "711b9620af191e0cdc7468a8d14e709c3dcdb115b36f838e601583af800a370a"
 [[package]]
 name = "v4l2r"
 version = "0.0.1"
+source = "git+https://github.com/Gnurou/v4l2r?branch=master#6091b1f0643f20435b97413635d935052f19c739"
+dependencies = [
+ "anyhow",
+ "bitflags 2.4.2",
+ "enumn",
+ "log",
+ "nix",
+ "thiserror",
+]
+
+[[package]]
+name = "v4l2r"
+version = "0.0.1"
 source = "git+https://github.com/Gnurou/v4l2r?rev=110fd77#110fd773d15c787cbc6c2ded1bf8459c8df89f72"
 dependencies = [
  "anyhow",
@@ -722,6 +750,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "assert_matches",
+ "async-mutex",
  "bitflags 2.4.2",
  "clap",
  "env_logger",
@@ -734,6 +763,7 @@ dependencies = [
  "rstest",
  "tempfile",
  "thiserror",
+ "v4l2r 0.0.1 (git+https://github.com/Gnurou/v4l2r?branch=master)",
  "vhost",
  "vhost-user-backend",
  "virtio-bindings",
