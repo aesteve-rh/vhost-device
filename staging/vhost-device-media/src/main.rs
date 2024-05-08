@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0 or BSD-3-Clause
+mod media_backends;
 mod vhu_media;
-mod vhu_media_thread;
+mod virtio;
 
 use std::{
     path::PathBuf,
     sync::{Arc, RwLock},
 };
 
+use ::virtio_media::protocol::VirtioMediaDeviceConfig;
 use clap::Parser;
 use log::debug;
 use thiserror::Error as ThisError;
@@ -15,6 +17,8 @@ use vhu_media::VuMediaBackend;
 use vm_memory::{GuestMemoryAtomic, GuestMemoryMmap};
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
+
+pub(crate) const VIRTIO_V4L2_CARD_NAME_LEN: usize = 32;
 
 #[derive(Debug, ThisError)]
 pub(crate) enum Error {
@@ -34,8 +38,8 @@ struct MediaArgs {
     #[clap(short, long)]
     socket_path: PathBuf,
 
-    /// Path to the media device file. Defaults to /dev/media0.
-    #[clap(short = 'd', long, default_value = "/dev/media0")]
+    /// Path to the media device file. Defaults to /dev/video0.
+    #[clap(short = 'd', long, default_value = "/dev/video0")]
     v4l2_device: PathBuf,
 }
 
@@ -56,14 +60,35 @@ impl From<MediaArgs> for VuMediaConfig {
     }
 }
 
-pub(crate) fn start_backend(config: VuMediaConfig) -> Result<()> {
+fn create_simple_capture_device_config() -> VirtioMediaDeviceConfig {
+    use v4l2r::ioctl::Capabilities;
+    let mut card = [0u8; VIRTIO_V4L2_CARD_NAME_LEN];
+    let card_name = "simple_device";
+    card[0..card_name.len()].copy_from_slice(card_name.as_bytes());
+    VirtioMediaDeviceConfig {
+        device_caps: (Capabilities::VIDEO_CAPTURE | Capabilities::STREAMING).bits(),
+        device_type: 0,
+        card,
+    }
+}
+
+pub(crate) fn start_backend(media_config: VuMediaConfig) -> Result<()> {
     loop {
         debug!("Starting backend");
+        let config = create_simple_capture_device_config();
         let vu_video_backend = Arc::new(RwLock::new(
-            VuMediaBackend::new(config.v4l2_device.as_path())
-                .map_err(Error::CouldNotCreateBackend)?,
+            VuMediaBackend::new(
+                media_config.v4l2_device.as_path(),
+                config,
+                |event_queue, host_mapper| {
+                    Ok(virtio_media::devices::SimpleCaptureDevice::new(
+                        event_queue,
+                        host_mapper,
+                    ))
+                },
+            )
+            .map_err(Error::CouldNotCreateBackend)?,
         ));
-
         let mut daemon = VhostUserDaemon::new(
             "vhost-device-media".to_owned(),
             vu_video_backend.clone(),
@@ -72,7 +97,7 @@ pub(crate) fn start_backend(config: VuMediaConfig) -> Result<()> {
         .unwrap();
 
         daemon
-            .serve(&config.socket_path)
+            .serve(&media_config.socket_path)
             .map_err(Error::ServeFailed)?;
         debug!("Finishing backend");
     }
