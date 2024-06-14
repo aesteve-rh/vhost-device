@@ -13,7 +13,7 @@ use clap::Parser;
 use log::debug;
 use thiserror::Error as ThisError;
 use vhost_user_backend::VhostUserDaemon;
-use vhu_media::VuMediaBackend;
+use vhu_media::{BackendType, VuMediaBackend};
 use vm_memory::{GuestMemoryAtomic, GuestMemoryMmap};
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
@@ -41,12 +41,18 @@ struct MediaArgs {
     /// Path to the media device file. Defaults to /dev/video0.
     #[clap(short = 'd', long, default_value = "/dev/video0")]
     v4l2_device: PathBuf,
+
+    /// Media backend to be used.
+    #[clap(short, long, default_value = "simple-backend")]
+    #[clap(value_enum)]
+    backend: BackendType,
 }
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct VuMediaConfig {
     pub socket_path: PathBuf,
     pub v4l2_device: PathBuf,
+    pub backend: BackendType,
 }
 
 impl From<MediaArgs> for VuMediaConfig {
@@ -56,6 +62,7 @@ impl From<MediaArgs> for VuMediaConfig {
         Self {
             socket_path: args.socket_path.to_owned(),
             v4l2_device: args.v4l2_device.to_owned(),
+            backend: args.backend,
         }
     }
 }
@@ -72,17 +79,66 @@ fn create_simple_capture_device_config() -> VirtioMediaDeviceConfig {
     }
 }
 
+fn create_v4l2_proxy_device_config(device_path: &PathBuf) -> VirtioMediaDeviceConfig {
+    use virtio_media::v4l2r::ioctl::Capabilities;
+
+    let device = virtio_media::v4l2r::device::Device::open(
+        device_path.as_ref(),
+        virtio_media::v4l2r::device::DeviceConfig::new().non_blocking_dqbuf(),
+    ).unwrap();
+    let mut device_caps = device.caps().device_caps();
+
+    // We are only exposing one device worth of capabilities.
+    device_caps.remove(Capabilities::DEVICE_CAPS);
+
+    // Read-write is not supported by design.
+    device_caps.remove(Capabilities::READWRITE);
+
+    let mut config = VirtioMediaDeviceConfig {
+        device_caps: device_caps.bits(),
+        // VFL_TYPE_VIDEO
+        // TODO should not be hardcoded!
+        device_type: 0,
+        card: Default::default(),
+    };
+    let card = &device.caps().card;
+    let name_slice = card[0..std::cmp::min(card.len(), config.card.len())].as_bytes();
+    config.card.as_mut_slice()[0..name_slice.len()].copy_from_slice(name_slice);
+
+    config
+}
+
 pub(crate) fn start_backend(media_config: VuMediaConfig) -> Result<()> {
     loop {
         debug!("Starting backend");
-        let config = create_simple_capture_device_config();
+        //let config = create_simple_capture_device_config();
+        let path = media_config.v4l2_device.clone();
+        let config = create_v4l2_proxy_device_config(&path);
         let vu_video_backend = Arc::new(RwLock::new(
             VuMediaBackend::new(
                 media_config.v4l2_device.as_path(),
                 config,
-                |event_queue, host_mapper| {
-                    Ok(virtio_media::devices::SimpleCaptureDevice::new(
+                move |event_queue, guest_mapper, host_mapper| {
+                    /*Ok(match media_config.backend {
+                        BackendType::SimpleCapture => {
+                            virtio_media::devices::SimpleCaptureDevice::new(
+                                event_queue,
+                                host_mapper,
+                            ) 
+                        },
+                        BackendType::V4l2Proxy => {
+                            virtio_media::devices::V4l2ProxyDevice::new(
+                                media_config.v4l2_device.as_path(),
+                                event_queue,
+                                guest_mapper,
+                                host_mapper,
+                            ) 
+                        },
+                    })*/
+                    Ok(virtio_media::devices::V4l2ProxyDevice::new(
+                        path.clone(),
                         event_queue,
+                        guest_mapper,
                         host_mapper,
                     ))
                 },

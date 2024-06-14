@@ -1,25 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0 or BSD-3-Clause
 
-mod null;
-
-use std::{os::fd::BorrowedFd, path::Path};
+use std::os::fd::BorrowedFd;
 
 use log::warn;
-use null::NullBackend;
 use vhost::vhost_user::{
     message::{VhostUserBackendMapMsg, VhostUserFSBackendMsgFlags},
     Backend, VhostUserFrontendReqHandler,
 };
 use vhost_user_backend::{VringRwLock, VringT};
+use virtio_media::VirtioMediaGuestMemoryMapper;
+use virtio_media::protocol::SgEntry;
 //#[cfg(feature = "simple-device")]
 use virtio_media::{
     protocol::{DequeueBufferEvent, ErrorEvent, SessionEvent, V4l2Event},
     VirtioMediaEventQueue, VirtioMediaHostMemoryMapper,
 };
 use virtio_queue::QueueOwnedT;
-use vm_memory::{Bytes, GuestAddressSpace, GuestMemoryAtomic, GuestMemoryMmap};
+use vm_memory::{Bytes, GuestAddress, GuestAddressSpace, GuestMemoryAtomic, GuestMemoryMmap};
 
-use crate::vhu_media::{BackendType, MediaResult, VuMediaError};
 
 #[repr(C)]
 pub struct EventQueue {
@@ -157,20 +155,87 @@ impl VirtioMediaHostMemoryMapper for VuBackend {
     }
 }
 
-pub trait MediaBackend {}
+pub struct GuestMemoryMapping{
+    data: Vec<u8>,
+    mem: GuestMemoryAtomic<GuestMemoryMmap>,
+    sgs: Vec<SgEntry>,
+    dirty: bool,
+}
 
-pub(crate) fn alloc_media_backend(
-    backend: BackendType,
-    video_path: &Path,
-) -> MediaResult<Box<dyn MediaBackend + Sync + Send>> {
-    macro_rules! build_backend {
-        ($type:ident) => {
-            Box::new($type::new(video_path).map_err(|_| VuMediaError::AccessVideoDeviceFile)?)
-        };
+impl GuestMemoryMapping {
+    fn new(mem: &GuestMemoryAtomic<GuestMemoryMmap>, sgs: Vec<SgEntry>) -> anyhow::Result<Self> {
+        let total_size = sgs.iter().fold(0, |total, sg| total + sg.len as usize);
+        let mut data = Vec::with_capacity(total_size);
+        // Safe because we are about to write `total_size` bytes of data.
+        // This is not ideal and we should use `spare_capacity_mut` instead but the methods of
+        // `MaybeUnint` that would make it possible to use that with `read_exact_at_addr` are still
+        // in nightly.
+        unsafe { data.set_len(total_size) };
+        let mut pos = 0;
+        for sg in &sgs {
+            mem.memory().read(
+                &mut data[pos..pos + sg.len as usize],
+                GuestAddress(sg.start))?;
+            pos += sg.len as usize;
+        }
+
+        Ok(Self {
+            data,
+            mem: mem.clone(),
+            sgs,
+            dirty: false,
+        })
     }
-    Ok(match backend {
-        BackendType::Null => build_backend!(NullBackend),
-        #[cfg(feature = "simple-device")]
-        BackendType::SimpleCapture => SimpleCaptureDevice::new(event_queue, host_mapper),
-    })
+}
+
+impl AsRef<[u8]> for GuestMemoryMapping {
+    fn as_ref(&self) -> &[u8] {
+        self.data.as_ref()
+    }
+}
+
+impl AsMut<[u8]> for GuestMemoryMapping {
+    fn as_mut(&mut self) -> &mut [u8] {
+        self.dirty = true;
+        self.data.as_mut()
+    }
+}
+
+/// Write the potentially modified shadow buffer back into the guest memory.
+impl Drop for GuestMemoryMapping {
+    fn drop(&mut self) {
+        // No need to copy back if no modification has been done.
+        if !self.dirty {
+            return;
+        }
+
+        let mut pos = 0;
+        for sg in &self.sgs {
+            if let Err(e) = self.mem.memory().write(
+                &self.data[pos..pos + sg.len as usize],
+                GuestAddress(sg.start),
+            ) {
+                log::error!("failed to write back guest memory shadow mapping: {:#}", e);
+            }
+            pos += sg.len as usize;
+        }
+    }
+}
+
+pub struct VuMemoryMapper(GuestMemoryAtomic<GuestMemoryMmap>);
+
+impl VuMemoryMapper {
+    pub fn new(mem: GuestMemoryAtomic<GuestMemoryMmap>) -> Self {
+        Self {
+            0: mem
+        }
+    }
+}
+
+impl VirtioMediaGuestMemoryMapper for VuMemoryMapper {
+    type GuestMemoryMapping = GuestMemoryMapping;
+
+    fn new_mapping(&self, sgs: Vec<SgEntry>) -> anyhow::Result<Self::GuestMemoryMapping> {
+        GuestMemoryMapping::new(&self.0, sgs)
+    }
 }

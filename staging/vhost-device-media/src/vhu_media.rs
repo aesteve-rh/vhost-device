@@ -6,6 +6,7 @@ use std::{
     path::Path,
 };
 
+use clap::ValueEnum;
 use log::{debug, info, warn};
 use thiserror::Error as ThisError;
 use vhost::vhost_user::{Backend, VhostUserProtocolFeatures, VhostUserVirtioFeatures};
@@ -27,7 +28,7 @@ use vmm_sys_util::{
 use zerocopy::AsBytes;
 
 use crate::{
-    media_backends::{EventQueue, VuBackend},
+    media_backends::{EventQueue, VuMemoryMapper, VuBackend},
     virtio,
 };
 
@@ -35,12 +36,11 @@ pub(crate) type MediaResult<T> = std::result::Result<T, VuMediaError>;
 pub(crate) type Writer = virtio::DescriptorChainWriter<GuestMemoryLoadGuard<GuestMemoryMmap>>;
 pub(crate) type Reader = virtio::DescriptorChainReader<GuestMemoryLoadGuard<GuestMemoryMmap>>;
 
-#[derive(Debug, Default, Clone, Eq, PartialEq)]
+#[derive(ValueEnum, Debug, Default, Clone, Eq, PartialEq)]
 pub(crate) enum BackendType {
     #[default]
-    Null,
-    #[cfg(feature = "simple-device")]
     SimpleCapture,
+    V4l2Proxy,
 }
 
 const QUEUE_SIZE: usize = 256;
@@ -83,7 +83,7 @@ impl convert::From<VuMediaError> for io::Error {
 
 pub(crate) struct VuMediaBackend<
     D: VirtioMediaDevice<Reader, Writer>,
-    F: Fn(EventQueue, VuBackend) -> MediaResult<D>,
+    F: Fn(EventQueue, VuMemoryMapper, VuBackend) -> MediaResult<D>,
 > {
     config: VirtioMediaDeviceConfig,
     event_idx: bool,
@@ -97,7 +97,7 @@ pub(crate) struct VuMediaBackend<
 impl<D, F> VuMediaBackend<D, F>
 where
     D: VirtioMediaDevice<Reader, Writer>,
-    F: Fn(EventQueue, VuBackend) -> MediaResult<D>,
+    F: Fn(EventQueue, VuMemoryMapper, VuBackend) -> MediaResult<D>,
 {
     /// Create a new virtio video device for /dev/video<num>.
     pub fn new(
@@ -157,7 +157,7 @@ impl<D, F> VhostUserBackendMut for VuMediaBackend<D, F>
 where
     D: VirtioMediaDevice<Reader, Writer> + Send + Sync,
     <D as VirtioMediaDevice<Reader, Writer>>::Session: Send + Sync,
-    F: Fn(EventQueue, VuBackend) -> MediaResult<D> + Send + Sync,
+    F: Fn(EventQueue, VuMemoryMapper, VuBackend) -> MediaResult<D> + Send + Sync,
 {
     type Vring = VringRwLock;
     type Bitmap = ();
@@ -217,6 +217,7 @@ where
                     mem: self.mem.as_ref().unwrap().clone(),
                     queue: eventq.clone(),
                 },
+                VuMemoryMapper::new(self.atomic_mem().unwrap().clone()),
                 VuBackend::new(self.vu_req.as_ref().unwrap().clone()),
             )
             .unwrap();
