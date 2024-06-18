@@ -8,8 +8,7 @@ use vhost::vhost_user::{
     Backend, VhostUserFrontendReqHandler,
 };
 use vhost_user_backend::{VringRwLock, VringT};
-use virtio_media::VirtioMediaGuestMemoryMapper;
-use virtio_media::protocol::SgEntry;
+use virtio_media::{protocol::SgEntry, VirtioMediaGuestMemoryMapper};
 //#[cfg(feature = "simple-device")]
 use virtio_media::{
     protocol::{DequeueBufferEvent, ErrorEvent, SessionEvent, V4l2Event},
@@ -17,7 +16,6 @@ use virtio_media::{
 };
 use virtio_queue::QueueOwnedT;
 use vm_memory::{Bytes, GuestAddress, GuestAddressSpace, GuestMemoryAtomic, GuestMemoryMmap};
-
 
 #[repr(C)]
 pub struct EventQueue {
@@ -155,7 +153,7 @@ impl VirtioMediaHostMemoryMapper for VuBackend {
     }
 }
 
-pub struct GuestMemoryMapping{
+pub struct GuestMemoryMapping {
     data: Vec<u8>,
     mem: GuestMemoryAtomic<GuestMemoryMmap>,
     sgs: Vec<SgEntry>,
@@ -167,15 +165,16 @@ impl GuestMemoryMapping {
         let total_size = sgs.iter().fold(0, |total, sg| total + sg.len as usize);
         let mut data = Vec::with_capacity(total_size);
         // Safe because we are about to write `total_size` bytes of data.
-        // This is not ideal and we should use `spare_capacity_mut` instead but the methods of
-        // `MaybeUnint` that would make it possible to use that with `read_exact_at_addr` are still
-        // in nightly.
+        // This is not ideal and we should use `spare_capacity_mut` instead but the
+        // methods of `MaybeUnint` that would make it possible to use that with
+        // `read_exact_at_addr` are still in nightly.
         unsafe { data.set_len(total_size) };
         let mut pos = 0;
         for sg in &sgs {
             mem.memory().read(
                 &mut data[pos..pos + sg.len as usize],
-                GuestAddress(sg.start))?;
+                GuestAddress(sg.start),
+            )?;
             pos += sg.len as usize;
         }
 
@@ -226,9 +225,7 @@ pub struct VuMemoryMapper(GuestMemoryAtomic<GuestMemoryMmap>);
 
 impl VuMemoryMapper {
     pub fn new(mem: GuestMemoryAtomic<GuestMemoryMmap>) -> Self {
-        Self {
-            0: mem
-        }
+        Self { 0: mem }
     }
 }
 

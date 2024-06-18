@@ -4,23 +4,20 @@ use std::{
     convert,
     io::{self, Result as IoResult},
     path::Path,
+    sync::Mutex,
 };
 
 use clap::ValueEnum;
 use log::{debug, info, warn};
 use thiserror::Error as ThisError;
 use vhost::vhost_user::{Backend, VhostUserProtocolFeatures, VhostUserVirtioFeatures};
-use vhost_user_backend::{VhostUserBackendMut, VringRwLock, VringT};
+use vhost_user_backend::{VhostUserBackend, VringRwLock, VringT};
 use virtio_bindings::{
     virtio_config::{VIRTIO_F_NOTIFY_ON_EMPTY, VIRTIO_F_VERSION_1},
     virtio_ring::{VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC},
 };
-use virtio_media::{
-    poll::SessionPoller, protocol::VirtioMediaDeviceConfig, VirtioMediaDevice,
-    VirtioMediaDeviceRunner,
-};
-use virtio_queue::QueueOwnedT;
-use vm_memory::{GuestAddressSpace, GuestMemoryAtomic, GuestMemoryLoadGuard, GuestMemoryMmap};
+use virtio_media::{protocol::VirtioMediaDeviceConfig, VirtioMediaDevice};
+use vm_memory::{GuestMemoryAtomic, GuestMemoryLoadGuard, GuestMemoryMmap};
 use vmm_sys_util::{
     epoll::EventSet,
     eventfd::{EventFd, EFD_NONBLOCK},
@@ -28,7 +25,8 @@ use vmm_sys_util::{
 use zerocopy::AsBytes;
 
 use crate::{
-    media_backends::{EventQueue, VuMemoryMapper, VuBackend},
+    media_backends::{EventQueue, VuBackend, VuMemoryMapper},
+    vhu_media_thread::VhostUserMediaThread,
     virtio,
 };
 
@@ -44,7 +42,7 @@ pub(crate) enum BackendType {
 }
 
 const QUEUE_SIZE: usize = 256;
-const NUM_QUEUES: usize = 2;
+pub const NUM_QUEUES: usize = 2;
 const COMMAND_Q: u16 = 0;
 pub const EVENT_Q: u16 = 1;
 
@@ -59,20 +57,16 @@ pub(crate) enum VuMediaError {
     SendNotificationFailed,
     #[error("Can't create eventFd")]
     EventFdError,
-    #[error("Video device file doesn't exists or can't be accessed")]
-    AccessVideoDeviceFile,
     #[error("Failed to handle event")]
     HandleEventNotEpollIn,
-    #[error("Unknown device event")]
-    HandleUnknownEvent,
-    #[error("Too many descriptors: {0}")]
-    UnexpectedDescriptorCount(usize),
-    #[error("Invalid descriptor size, expected at least: {0}, found: {1}")]
-    UnexpectedMinimumDescriptorSize(usize, usize),
-    #[error("Received unexpected readable descriptor at index {0}")]
-    UnexpectedReadableDescriptor(usize),
     #[error("No memory configured")]
     NoMemoryConfigured,
+    #[error("Received event for non-registered session: {0}")]
+    MissingSession(u32),
+    #[error("Media Device Runner not initialised")]
+    MissingRunner,
+    #[error("Error while processing events for session {0}: {1}")]
+    ProcessSessionEvent(u32, i32),
 }
 
 impl convert::From<VuMediaError> for io::Error {
@@ -82,22 +76,22 @@ impl convert::From<VuMediaError> for io::Error {
 }
 
 pub(crate) struct VuMediaBackend<
-    D: VirtioMediaDevice<Reader, Writer>,
-    F: Fn(EventQueue, VuMemoryMapper, VuBackend) -> MediaResult<D>,
-> {
+    D: VirtioMediaDevice<Reader, Writer> + Send + Sync,
+    F: Fn(EventQueue, VuMemoryMapper, VuBackend) -> MediaResult<D> + Send + Sync,
+> where
+    <D as VirtioMediaDevice<Reader, Writer>>::Session: Send + Sync,
+{
     config: VirtioMediaDeviceConfig,
-    event_idx: bool,
-    mem: Option<GuestMemoryAtomic<GuestMemoryMmap>>,
+    pub threads: Vec<Mutex<VhostUserMediaThread<D, F>>>,
     pub exit_event: EventFd,
-    vu_req: Option<Backend>,
-    worker: Option<VirtioMediaDeviceRunner<Reader, Writer, D, ()>>,
     create_device: F,
 }
 
 impl<D, F> VuMediaBackend<D, F>
 where
-    D: VirtioMediaDevice<Reader, Writer>,
-    F: Fn(EventQueue, VuMemoryMapper, VuBackend) -> MediaResult<D>,
+    D: VirtioMediaDevice<Reader, Writer> + Send + Sync,
+    <D as VirtioMediaDevice<Reader, Writer>>::Session: Send + Sync,
+    F: Fn(EventQueue, VuMemoryMapper, VuBackend) -> MediaResult<D> + Send + Sync,
 {
     /// Create a new virtio video device for /dev/video<num>.
     pub fn new(
@@ -106,54 +100,16 @@ where
         create_device: F,
     ) -> MediaResult<Self> {
         Ok(Self {
-            event_idx: false,
-            mem: None,
             config,
+            threads: vec![Mutex::new(VhostUserMediaThread::new()?)],
             exit_event: EventFd::new(EFD_NONBLOCK).map_err(|_| VuMediaError::EventFdError)?,
-            vu_req: None,
-            worker: None,
             create_device,
         })
-    }
-
-    fn atomic_mem(&self) -> MediaResult<&GuestMemoryAtomic<GuestMemoryMmap>> {
-        match &self.mem {
-            Some(m) => Ok(m),
-            None => Err(VuMediaError::NoMemoryConfigured),
-        }
-    }
-
-    fn process_command_queue(&mut self, vring: &VringRwLock) -> MediaResult<()> {
-        let chains: Vec<_> = vring
-            .get_mut()
-            .get_queue_mut()
-            .iter(self.atomic_mem()?.memory())
-            .map_err(|_| VuMediaError::DescriptorNotFound)?
-            .collect();
-
-        for dc in chains {
-            let mut writer = Writer::new(dc.clone());
-            let mut reader = Reader::new(dc.clone());
-
-            if let Some(runner) = &mut self.worker {
-                runner.handle_command(&mut reader, &mut writer);
-            }
-
-            vring
-                .add_used(dc.head_index(), writer.max_written())
-                .map_err(|_| VuMediaError::AddUsedDescriptorFailed)?;
-        }
-
-        vring
-            .signal_used_queue()
-            .map_err(|_| VuMediaError::SendNotificationFailed)?;
-
-        Ok(())
     }
 }
 
 /// VhostUserBackend trait methods
-impl<D, F> VhostUserBackendMut for VuMediaBackend<D, F>
+impl<D, F> VhostUserBackend for VuMediaBackend<D, F>
 where
     D: VirtioMediaDevice<Reader, Writer> + Send + Sync,
     <D as VirtioMediaDevice<Reader, Writer>>::Session: Send + Sync,
@@ -189,73 +145,76 @@ where
             | VhostUserProtocolFeatures::REPLY_ACK
     }
 
-    fn set_event_idx(&mut self, enabled: bool) {
-        self.event_idx = enabled;
+    fn set_event_idx(&self, enabled: bool) {
+        for thread in self.threads.iter() {
+            thread.lock().unwrap().event_idx = enabled;
+        }
     }
 
-    fn update_memory(&mut self, atomic_mem: GuestMemoryAtomic<GuestMemoryMmap>) -> IoResult<()> {
+    fn update_memory(&self, mem: GuestMemoryAtomic<GuestMemoryMmap>) -> IoResult<()> {
         info!("Memory updated - guest probably booting");
-        self.mem = Some(atomic_mem);
+        for thread in self.threads.iter() {
+            thread.lock().unwrap().mem = Some(mem.clone());
+        }
         Ok(())
     }
 
     fn handle_event(
-        &mut self,
+        &self,
         device_event: u16,
         evset: EventSet,
         vrings: &[VringRwLock],
-        _thread_id: usize,
+        thread_id: usize,
     ) -> IoResult<()> {
         if evset != EventSet::IN {
             warn!("Non-input event");
             return Err(VuMediaError::HandleEventNotEpollIn.into());
         }
+        let mut thread = self.threads[thread_id].lock().unwrap();
+        let commandq = &vrings[COMMAND_Q as usize];
         let eventq = &vrings[EVENT_Q as usize];
-        if self.worker.is_none() {
+        let evt_idx = thread.event_idx;
+        if thread.need_media_worker() {
             let device = (self.create_device)(
                 EventQueue {
-                    mem: self.mem.as_ref().unwrap().clone(),
+                    mem: thread.mem.as_ref().unwrap().clone(),
                     queue: eventq.clone(),
                 },
-                VuMemoryMapper::new(self.atomic_mem().unwrap().clone()),
-                VuBackend::new(self.vu_req.as_ref().unwrap().clone()),
+                VuMemoryMapper::new(thread.atomic_mem().unwrap().clone()),
+                VuBackend::new(thread.vu_req.as_ref().unwrap().clone()),
             )
             .unwrap();
-            self.worker = Some(VirtioMediaDeviceRunner::new(device, ()));
+            thread.set_media_worker(device);
         }
 
         match device_event {
             COMMAND_Q => {
-                let commandq = &vrings[COMMAND_Q as usize];
-
-                if self.event_idx {
+                if evt_idx {
                     // vm-virtio's Queue implementation only checks avail_index
                     // once, so to properly support EVENT_IDX we need to keep
                     // calling process_queue() until it stops finding new
                     // requests on the queue.
                     loop {
                         commandq.disable_notification().unwrap();
-                        self.process_command_queue(commandq)?;
+                        thread.process_command_queue(commandq)?;
                         if !commandq.enable_notification().unwrap() {
                             break;
                         }
                     }
                 } else {
                     // Without EVENT_IDX, a single call is enough.
-                    self.process_command_queue(commandq)?;
+                    thread.process_command_queue(commandq)?;
                 }
             }
 
             EVENT_Q => {
-                // This queue is used by the device to asynchronously send
-                // event notifications to the driver. Thus, we do not handle
-                // incoming events.
+                // We do not handle incoming events.
                 warn!("Unexpected event notification received");
             }
 
-            _ => {
-                warn!("unhandled device_event: {}", device_event);
-                return Err(VuMediaError::HandleUnknownEvent.into());
+            session_id => {
+                let session_id = session_id as usize - (NUM_QUEUES + 1);
+                thread.process_media_events(session_id as u32)?;
             }
         }
         Ok(())
@@ -279,8 +238,10 @@ where
         self.exit_event.try_clone().ok()
     }
 
-    fn set_backend_req_fd(&mut self, vu_req: Backend) {
+    fn set_backend_req_fd(&self, vu_req: Backend) {
         debug!("Setting req fd");
-        self.vu_req = Some(vu_req);
+        for thread in self.threads.iter() {
+            thread.lock().unwrap().vu_req = Some(vu_req.clone());
+        }
     }
 }

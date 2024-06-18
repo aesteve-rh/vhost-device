@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0 or BSD-3-Clause
 mod media_backends;
 mod vhu_media;
+mod vhu_media_thread;
 mod virtio;
 
-use std::{
-    path::PathBuf,
-    sync::{Arc, RwLock},
-};
+use std::{path::PathBuf, sync::Arc};
 
 use ::virtio_media::protocol::VirtioMediaDeviceConfig;
 use clap::Parser;
@@ -43,7 +41,7 @@ struct MediaArgs {
     v4l2_device: PathBuf,
 
     /// Media backend to be used.
-    #[clap(short, long, default_value = "simple-backend")]
+    #[clap(short, long, default_value = "simple-capture")]
     #[clap(value_enum)]
     backend: BackendType,
 }
@@ -85,7 +83,8 @@ fn create_v4l2_proxy_device_config(device_path: &PathBuf) -> VirtioMediaDeviceCo
     let device = virtio_media::v4l2r::device::Device::open(
         device_path.as_ref(),
         virtio_media::v4l2r::device::DeviceConfig::new().non_blocking_dqbuf(),
-    ).unwrap();
+    )
+    .unwrap();
     let mut device_caps = device.caps().device_caps();
 
     // We are only exposing one device worth of capabilities.
@@ -105,6 +104,8 @@ fn create_v4l2_proxy_device_config(device_path: &PathBuf) -> VirtioMediaDeviceCo
     let name_slice = card[0..std::cmp::min(card.len(), config.card.len())].as_bytes();
     config.card.as_mut_slice()[0..name_slice.len()].copy_from_slice(name_slice);
 
+    debug!("Device config: {:?}", config);
+
     config
 }
 
@@ -114,7 +115,7 @@ pub(crate) fn start_backend(media_config: VuMediaConfig) -> Result<()> {
         //let config = create_simple_capture_device_config();
         let path = media_config.v4l2_device.clone();
         let config = create_v4l2_proxy_device_config(&path);
-        let vu_video_backend = Arc::new(RwLock::new(
+        let vu_media_backend = Arc::new(
             VuMediaBackend::new(
                 media_config.v4l2_device.as_path(),
                 config,
@@ -124,7 +125,7 @@ pub(crate) fn start_backend(media_config: VuMediaConfig) -> Result<()> {
                             virtio_media::devices::SimpleCaptureDevice::new(
                                 event_queue,
                                 host_mapper,
-                            ) 
+                            )
                         },
                         BackendType::V4l2Proxy => {
                             virtio_media::devices::V4l2ProxyDevice::new(
@@ -132,7 +133,7 @@ pub(crate) fn start_backend(media_config: VuMediaConfig) -> Result<()> {
                                 event_queue,
                                 guest_mapper,
                                 host_mapper,
-                            ) 
+                            )
                         },
                     })*/
                     Ok(virtio_media::devices::V4l2ProxyDevice::new(
@@ -144,13 +145,21 @@ pub(crate) fn start_backend(media_config: VuMediaConfig) -> Result<()> {
                 },
             )
             .map_err(Error::CouldNotCreateBackend)?,
-        ));
+        );
         let mut daemon = VhostUserDaemon::new(
             "vhost-device-media".to_owned(),
-            vu_video_backend.clone(),
+            vu_media_backend.clone(),
             GuestMemoryAtomic::new(GuestMemoryMmap::new()),
         )
         .unwrap();
+
+        let mut vring_workers = daemon.get_epoll_handlers();
+        for thread in vu_media_backend.threads.iter() {
+            thread
+                .lock()
+                .unwrap()
+                .set_vring_workers(vring_workers.remove(0));
+        }
 
         daemon
             .serve(&media_config.socket_path)
