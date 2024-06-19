@@ -104,66 +104,79 @@ fn create_v4l2_proxy_device_config(device_path: &PathBuf) -> VirtioMediaDeviceCo
     let name_slice = card[0..std::cmp::min(card.len(), config.card.len())].as_bytes();
     config.card.as_mut_slice()[0..name_slice.len()].copy_from_slice(name_slice);
 
-    debug!("Device config: {:?}", config);
-
     config
+}
+
+fn serve_simple_capture(media_config: &VuMediaConfig) -> Result<()> {
+    let vu_media_backend = Arc::new(
+        VuMediaBackend::new(
+            media_config.v4l2_device.as_path(),
+            create_simple_capture_device_config(),
+            move |event_queue, _, host_mapper| {
+                Ok(virtio_media::devices::SimpleCaptureDevice::new(
+                    event_queue,
+                    host_mapper,
+                ))
+            },
+        )
+        .map_err(Error::CouldNotCreateBackend)?,
+    );
+    let mut daemon = VhostUserDaemon::new(
+        "vhost-device-media".to_owned(),
+        vu_media_backend.clone(),
+        GuestMemoryAtomic::new(GuestMemoryMmap::new()),
+    )
+    .unwrap();
+
+    vu_media_backend.set_thread_workers(&mut daemon.get_epoll_handlers());
+
+    daemon
+        .serve(&media_config.socket_path)
+        .map_err(Error::ServeFailed)?;
+
+    Ok(())
+}
+
+fn serve_v4l2_proxy_daemon(media_config: &VuMediaConfig) -> Result<()> {
+    let path = media_config.v4l2_device.clone();
+    let vu_media_backend = Arc::new(
+        VuMediaBackend::new(
+            media_config.v4l2_device.as_path(),
+            create_v4l2_proxy_device_config(&path),
+            move |event_queue, guest_mapper, host_mapper| {
+                Ok(virtio_media::devices::V4l2ProxyDevice::new(
+                    path.clone(),
+                    event_queue,
+                    guest_mapper,
+                    host_mapper,
+                ))
+            },
+        )
+        .map_err(Error::CouldNotCreateBackend)?,
+    );
+    let mut daemon = VhostUserDaemon::new(
+        "vhost-device-media".to_owned(),
+        vu_media_backend.clone(),
+        GuestMemoryAtomic::new(GuestMemoryMmap::new()),
+    )
+    .unwrap();
+
+    vu_media_backend.set_thread_workers(&mut daemon.get_epoll_handlers());
+    
+    daemon
+        .serve(&media_config.socket_path)
+        .map_err(Error::ServeFailed)?;
+
+    Ok(())
 }
 
 pub(crate) fn start_backend(media_config: VuMediaConfig) -> Result<()> {
     loop {
         debug!("Starting backend");
-        //let config = create_simple_capture_device_config();
-        let path = media_config.v4l2_device.clone();
-        let config = create_v4l2_proxy_device_config(&path);
-        let vu_media_backend = Arc::new(
-            VuMediaBackend::new(
-                media_config.v4l2_device.as_path(),
-                config,
-                move |event_queue, guest_mapper, host_mapper| {
-                    /*Ok(match media_config.backend {
-                        BackendType::SimpleCapture => {
-                            virtio_media::devices::SimpleCaptureDevice::new(
-                                event_queue,
-                                host_mapper,
-                            )
-                        },
-                        BackendType::V4l2Proxy => {
-                            virtio_media::devices::V4l2ProxyDevice::new(
-                                media_config.v4l2_device.as_path(),
-                                event_queue,
-                                guest_mapper,
-                                host_mapper,
-                            )
-                        },
-                    })*/
-                    Ok(virtio_media::devices::V4l2ProxyDevice::new(
-                        path.clone(),
-                        event_queue,
-                        guest_mapper,
-                        host_mapper,
-                    ))
-                },
-            )
-            .map_err(Error::CouldNotCreateBackend)?,
-        );
-        let mut daemon = VhostUserDaemon::new(
-            "vhost-device-media".to_owned(),
-            vu_media_backend.clone(),
-            GuestMemoryAtomic::new(GuestMemoryMmap::new()),
-        )
-        .unwrap();
-
-        let mut vring_workers = daemon.get_epoll_handlers();
-        for thread in vu_media_backend.threads.iter() {
-            thread
-                .lock()
-                .unwrap()
-                .set_vring_workers(vring_workers.remove(0));
-        }
-
-        daemon
-            .serve(&media_config.socket_path)
-            .map_err(Error::ServeFailed)?;
+        match media_config.backend {
+            BackendType::SimpleCapture => serve_simple_capture(&media_config),
+            BackendType::V4l2Proxy => serve_v4l2_proxy_daemon(&media_config),
+        }?;
         debug!("Finishing backend");
     }
 }

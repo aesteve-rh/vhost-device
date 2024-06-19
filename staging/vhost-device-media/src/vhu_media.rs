@@ -4,14 +4,14 @@ use std::{
     convert,
     io::{self, Result as IoResult},
     path::Path,
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 use clap::ValueEnum;
 use log::{debug, info, warn};
 use thiserror::Error as ThisError;
 use vhost::vhost_user::{Backend, VhostUserProtocolFeatures, VhostUserVirtioFeatures};
-use vhost_user_backend::{VhostUserBackend, VringRwLock, VringT};
+use vhost_user_backend::{VhostUserBackend, VringEpollHandler, VringRwLock, VringT};
 use virtio_bindings::{
     virtio_config::{VIRTIO_F_NOTIFY_ON_EMPTY, VIRTIO_F_VERSION_1},
     virtio_ring::{VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC},
@@ -79,18 +79,18 @@ pub(crate) struct VuMediaBackend<
     D: VirtioMediaDevice<Reader, Writer> + Send + Sync,
     F: Fn(EventQueue, VuMemoryMapper, VuBackend) -> MediaResult<D> + Send + Sync,
 > where
-    <D as VirtioMediaDevice<Reader, Writer>>::Session: Send + Sync,
+    D::Session: Send + Sync,
 {
     config: VirtioMediaDeviceConfig,
-    pub threads: Vec<Mutex<VhostUserMediaThread<D, F>>>,
-    pub exit_event: EventFd,
+    threads: Vec<Mutex<VhostUserMediaThread<D, F>>>,
+    exit_event: EventFd,
     create_device: F,
 }
 
 impl<D, F> VuMediaBackend<D, F>
 where
     D: VirtioMediaDevice<Reader, Writer> + Send + Sync,
-    <D as VirtioMediaDevice<Reader, Writer>>::Session: Send + Sync,
+    D::Session: Send + Sync,
     F: Fn(EventQueue, VuMemoryMapper, VuBackend) -> MediaResult<D> + Send + Sync,
 {
     /// Create a new virtio video device for /dev/video<num>.
@@ -106,13 +106,22 @@ where
             create_device,
         })
     }
+
+    pub fn set_thread_workers(&self, vring_workers: &mut Vec<Arc<VringEpollHandler<Arc<Self>>>>) {
+        for thread in self.threads.iter() {
+            thread
+                .lock()
+                .unwrap()
+                .set_vring_workers(vring_workers.remove(0));
+        }
+    }
 }
 
 /// VhostUserBackend trait methods
 impl<D, F> VhostUserBackend for VuMediaBackend<D, F>
 where
     D: VirtioMediaDevice<Reader, Writer> + Send + Sync,
-    <D as VirtioMediaDevice<Reader, Writer>>::Session: Send + Sync,
+    D::Session: Send + Sync,
     F: Fn(EventQueue, VuMemoryMapper, VuBackend) -> MediaResult<D> + Send + Sync,
 {
     type Vring = VringRwLock;

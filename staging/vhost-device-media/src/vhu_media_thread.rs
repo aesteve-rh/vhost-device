@@ -21,7 +21,7 @@ struct MediaSession<
     D: VirtioMediaDevice<Reader, Writer> + Send + Sync,
     F: Fn(EventQueue, VuMemoryMapper, VuBackend) -> MediaResult<D> + Send + Sync,
 > where
-    <D as VirtioMediaDevice<Reader, Writer>>::Session: Send + Sync,
+    D::Session: Send + Sync,
 {
     epoll_handler: Arc<VringEpollHandler<Arc<VuMediaBackend<D, F>>>>,
 }
@@ -29,7 +29,7 @@ struct MediaSession<
 impl<D, F> MediaSession<D, F>
 where
     D: VirtioMediaDevice<Reader, Writer> + Send + Sync,
-    <D as VirtioMediaDevice<Reader, Writer>>::Session: Send + Sync,
+    D::Session: Send + Sync,
     F: Fn(EventQueue, VuMemoryMapper, VuBackend) -> MediaResult<D> + Send + Sync,
 {
     pub fn new(epoll_handler: Arc<VringEpollHandler<Arc<VuMediaBackend<D, F>>>>) -> Self {
@@ -40,7 +40,7 @@ where
 impl<D, F> SessionPoller for MediaSession<D, F>
 where
     D: VirtioMediaDevice<Reader, Writer> + Send + Sync,
-    <D as VirtioMediaDevice<Reader, Writer>>::Session: Send + Sync,
+    D::Session: Send + Sync,
     F: Fn(EventQueue, VuMemoryMapper, VuBackend) -> MediaResult<D> + Send + Sync,
 {
     fn add_session(&self, session: BorrowedFd, session_id: u32) -> Result<(), i32> {
@@ -66,7 +66,7 @@ where
 impl<D, F> Clone for MediaSession<D, F>
 where
     D: VirtioMediaDevice<Reader, Writer> + Send + Sync,
-    <D as VirtioMediaDevice<Reader, Writer>>::Session: Send + Sync,
+    D::Session: Send + Sync,
     F: Fn(EventQueue, VuMemoryMapper, VuBackend) -> MediaResult<D> + Send + Sync,
 {
     fn clone(&self) -> Self {
@@ -80,7 +80,7 @@ pub(crate) struct VhostUserMediaThread<
     D: VirtioMediaDevice<Reader, Writer> + Send + Sync,
     F: Fn(EventQueue, VuMemoryMapper, VuBackend) -> MediaResult<D> + Send + Sync,
 > where
-    <D as VirtioMediaDevice<Reader, Writer>>::Session: Send + Sync,
+    D::Session: Send + Sync,
 {
     /// Guest memory map.
     pub mem: Option<GuestMemoryAtomic<GuestMemoryMmap>>,
@@ -94,7 +94,7 @@ pub(crate) struct VhostUserMediaThread<
 impl<D, F> VhostUserMediaThread<D, F>
 where
     D: VirtioMediaDevice<Reader, Writer> + Send + Sync,
-    <D as VirtioMediaDevice<Reader, Writer>>::Session: Send + Sync,
+    D::Session: Send + Sync,
     F: Fn(EventQueue, VuMemoryMapper, VuBackend) -> MediaResult<D> + Send + Sync,
 {
     pub fn new() -> MediaResult<Self> {
