@@ -4,7 +4,7 @@ use std::os::fd::BorrowedFd;
 
 use log::warn;
 use vhost::vhost_user::{
-    message::{VhostUserBackendMapMsg, VhostUserFSBackendMsgFlags},
+    message::{VhostUserBackendMapMsg, VhostUserBackendMapMsgFlags},
     Backend, VhostUserFrontendReqHandler,
 };
 use vhost_user_backend::{VringRwLock, VringT};
@@ -13,9 +13,12 @@ use virtio_media::{protocol::SgEntry, VirtioMediaGuestMemoryMapper};
 use virtio_media::{
     protocol::{DequeueBufferEvent, ErrorEvent, SessionEvent, V4l2Event},
     VirtioMediaEventQueue, VirtioMediaHostMemoryMapper,
+    GuestMemoryRange,
 };
 use virtio_queue::QueueOwnedT;
-use vm_memory::{Bytes, GuestAddress, GuestAddressSpace, GuestMemoryAtomic, GuestMemoryMmap};
+use vm_memory::{Bytes, GuestAddress, GuestAddressSpace};
+use vm_memory::atomic::GuestMemoryAtomic;
+use vm_memory::mmap::GuestMemoryMmap;
 
 #[repr(C)]
 pub struct EventQueue {
@@ -117,15 +120,16 @@ impl VirtioMediaHostMemoryMapper for VuBackend {
         msg.shm_offset = offset;
         msg.len = length;
         msg.flags = if rw {
-            VhostUserFSBackendMsgFlags::MAP_W | VhostUserFSBackendMsgFlags::MAP_R
+            VhostUserBackendMapMsgFlags::MAP_W | VhostUserBackendMapMsgFlags::MAP_R
         } else {
-            VhostUserFSBackendMsgFlags::MAP_R
+            VhostUserBackendMapMsgFlags::MAP_R
         };
 
         self.address.push(AddressRange {
             offset: msg.shm_offset,
             length: msg.len,
         });
+
         if let Err(e) = self.backend.mem_backend_map(&msg, &buffer) {
             warn!("failed to map memory buffer {}", e);
             return Err(libc::EINVAL);
@@ -137,7 +141,6 @@ impl VirtioMediaHostMemoryMapper for VuBackend {
     fn remove_mapping(&mut self, shm_offset: u64) -> std::result::Result<(), i32> {
         let mut msg: VhostUserBackendMapMsg = Default::default();
         msg.shm_offset = shm_offset;
-
         match self.address.iter().position(|a| a.offset == msg.shm_offset) {
             Some(index) => {
                 let addr = self.address.swap_remove(index);
@@ -187,16 +190,15 @@ impl GuestMemoryMapping {
     }
 }
 
-impl AsRef<[u8]> for GuestMemoryMapping {
-    fn as_ref(&self) -> &[u8] {
-        self.data.as_ref()
-    }
-}
 
-impl AsMut<[u8]> for GuestMemoryMapping {
-    fn as_mut(&mut self) -> &mut [u8] {
+impl GuestMemoryRange for GuestMemoryMapping {
+    fn as_ptr(&self) -> *const u8 {
+        self.data.as_ptr()
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut u8 {
         self.dirty = true;
-        self.data.as_mut()
+        self.data.as_mut_ptr()
     }
 }
 

@@ -4,7 +4,6 @@ use std::{
     sync::Arc,
 };
 
-use log::debug;
 use vhost::vhost_user::Backend;
 use vhost_user_backend::{VringEpollHandler, VringRwLock, VringT};
 use virtio_media::{poll::SessionPoller, VirtioMediaDevice, VirtioMediaDeviceRunner};
@@ -124,7 +123,6 @@ where
     }
 
     pub fn process_media_events(&mut self, session_id: u32) -> MediaResult<()> {
-        debug!("Processing event of session {}", session_id);
         if let Some(runner) = self.worker.as_mut() {
             let session = runner
                 .sessions

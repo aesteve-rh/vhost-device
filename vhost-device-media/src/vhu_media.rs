@@ -11,13 +11,15 @@ use clap::ValueEnum;
 use log::{debug, info, warn};
 use thiserror::Error as ThisError;
 use vhost::vhost_user::{Backend, VhostUserProtocolFeatures, VhostUserVirtioFeatures};
+use vhost::vhost_user::message::VhostUserShMemConfig;
 use vhost_user_backend::{VhostUserBackend, VringEpollHandler, VringRwLock, VringT};
 use virtio_bindings::{
     virtio_config::{VIRTIO_F_NOTIFY_ON_EMPTY, VIRTIO_F_VERSION_1},
     virtio_ring::{VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC},
 };
 use virtio_media::{protocol::VirtioMediaDeviceConfig, VirtioMediaDevice};
-use vm_memory::{GuestMemoryAtomic, GuestMemoryLoadGuard, GuestMemoryMmap};
+use vm_memory::{GuestMemoryAtomic, GuestMemoryLoadGuard};
+use vm_memory::mmap::GuestMemoryMmap;
 use vmm_sys_util::{
     epoll::EventSet,
     eventfd::{EventFd, EFD_NONBLOCK},
@@ -152,6 +154,7 @@ where
             | VhostUserProtocolFeatures::BACKEND_REQ
             | VhostUserProtocolFeatures::BACKEND_SEND_FD
             | VhostUserProtocolFeatures::REPLY_ACK
+            | VhostUserProtocolFeatures::SHMEM
     }
 
     fn set_event_idx(&self, enabled: bool) {
@@ -252,5 +255,10 @@ where
         for thread in self.threads.iter() {
             thread.lock().unwrap().vu_req = Some(vu_req.clone());
         }
+    }
+
+    fn get_shmem_config(&self) -> IoResult<VhostUserShMemConfig> {
+        //Ok(VhostUserShMemConfig::new(1, &[1 << 32]))
+        Ok(VhostUserShMemConfig::new(2, &[1 << 20, 1 << 20]))
     }
 }

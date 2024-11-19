@@ -1,0 +1,49 @@
+[package]
+name = "vhost-device-media"
+version = "0.1.0"
+authors = ["Albert Esteve <aesteve@redhat.com>"]
+description = "A virtio-media device using the vhost-user protocol."
+repository = "https://github.com/rust-vmm/vhost-device"
+keywords = ["vhost", "media", "virt", "backend"]
+license = "Apache-2.0 OR BSD-3-Clause"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+#xen = ["vm-memory/xen", "vhost/xen", "vhost-user-backend/xen"]
+
+[dependencies]
+bitflags = "2.6.0"
+clap = { version = "4.5.20",  features = ["derive"] }
+env_logger = "0.11.5"
+epoll = "4.3.3"
+num_enum = "0.7.3"
+log = "0.4.22"
+libc = "0.2.162"
+thiserror = "2.0.3"
+anyhow = "1.0.93"
+futures-executor = { version = "0.3.31", features = ["thread-pool"] }
+#vhost = { version = "0.12", features = ["vhost-user-backend"] }
+vhost = { path = "../../vhost/vhost", features = ["vhost-user-backend"] }
+#vhost-user-backend = "0.13"
+vhost-user-backend = { path = "../../vhost/vhost-user-backend" }
+virtio-bindings = "0.2.4"
+virtio-queue = "0.14.0"
+vm-memory = "0.16.1"
+vmm-sys-util = "0.12.1"
+ref-cast = "1.0.23"
+virtio-media = { path = "../../virtio-media/device" }
+#virtio-media = { git = "https://github.com/chromeos/virtio-media", rev = "0b9debe9aacd37ea12248495b116ceb6dc2e6811" }#, branch = "main" }#rev = "c84074d52fa9422baf29346f27a22f67fb470316" }
+#virtio-media = { version = "0.0.6" }
+#v4l2r = { git =  "https://github.com/Gnurou/v4l2r", branch = "master" }
+#v4l2r = { version = "0.0.5", features = ["arch64"] }
+v4l2r = { path = "../../v4l2r/lib" }
+zerocopy = { version = "0.7.31", features = ["derive"] }
+
+[dev-dependencies]
+assert_matches = "1.5.0"
+rstest = "0.23.0"
+tempfile = "3.14.0"
+virtio-queue = { version = "0.14.0", features = ["test-utils"] }
+vm-memory = { version = "0.16.1", features = ["backend-mmap", "backend-atomic"] }
