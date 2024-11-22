@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 or BSD-3-Clause
 
-use std::os::fd::BorrowedFd;
+use std::{borrow::Borrow, os::fd::BorrowedFd};
 
 use log::warn;
 use vhost::vhost_user::{
@@ -12,13 +12,20 @@ use virtio_media::{protocol::SgEntry, VirtioMediaGuestMemoryMapper};
 //#[cfg(feature = "simple-device")]
 use virtio_media::{
     protocol::{DequeueBufferEvent, ErrorEvent, SessionEvent, V4l2Event},
-    VirtioMediaEventQueue, VirtioMediaHostMemoryMapper,
-    GuestMemoryRange,
+    GuestMemoryRange, VirtioMediaEventQueue, VirtioMediaHostMemoryMapper,
 };
-use virtio_queue::QueueOwnedT;
-use vm_memory::{Bytes, GuestAddress, GuestAddressSpace};
-use vm_memory::atomic::GuestMemoryAtomic;
-use vm_memory::mmap::GuestMemoryMmap;
+use virtio_queue::{DescriptorChain, QueueOwnedT};
+use vm_memory::{
+    atomic::GuestMemoryAtomic, mmap::GuestMemoryMmap, Bytes, GuestAddress, GuestAddressSpace,
+    GuestMemoryLoadGuard,
+};
+
+use crate::{
+    media_allocator::{AddressRange, MediaAllocator},
+    vhu_media::SHMEM_SIZE,
+};
+
+type MediaDescriptorChain = DescriptorChain<GuestMemoryLoadGuard<GuestMemoryMmap>>;
 
 #[repr(C)]
 pub struct EventQueue {
@@ -27,24 +34,32 @@ pub struct EventQueue {
     pub mem: GuestMemoryAtomic<GuestMemoryMmap>,
 }
 
-impl VirtioMediaEventQueue for EventQueue {
-    fn send_event(&mut self, event: V4l2Event) {
-        let eventq = &self.queue;
-        let desc_chain = eventq
+impl EventQueue {
+    fn event(&self) -> Vec<MediaDescriptorChain> {
+        self.queue
+            .borrow()
             .get_mut()
             .get_queue_mut()
             .iter(self.mem.memory())
             .unwrap()
-            .collect::<Vec<_>>()
-            .pop();
-        let desc_chain = match desc_chain {
-            Some(desc_chain) => desc_chain,
-            None => {
-                warn!("No available buffer found in the event queue.");
-                return;
+            .collect()
+    }
+}
+
+impl VirtioMediaEventQueue for EventQueue {
+    fn send_event(&mut self, event: V4l2Event) {
+        let eventq = self.queue.borrow();
+        let desc_chain;
+        loop {
+            if let Some(d) = self.event().pop() {
+                desc_chain = d;
+                break;
             }
-        };
+        }
         let descriptors: Vec<_> = desc_chain.clone().collect();
+        if descriptors.len() > 1 {
+            warn!("Unexpected descriptor count {}", descriptors.len());
+        }
         if desc_chain
             .memory()
             .write_slice(
@@ -83,28 +98,22 @@ impl VirtioMediaEventQueue for EventQueue {
             warn!("Couldn't return used descriptors to the ring");
         }
         if let Err(e) = eventq.signal_used_queue() {
-            warn!("Failed to signal used queue: {e}")
+            warn!("Failed to signal used queue: {}", e);
         }
     }
 }
 
-#[derive(Debug, Default)]
-pub struct AddressRange {
-    offset: u64,
-    length: u64,
-}
-
 pub struct VuBackend {
     backend: Backend,
-    address: Vec<AddressRange>,
+    allocator: MediaAllocator,
 }
 
 impl VuBackend {
-    pub fn new(backend: Backend) -> Self {
-        Self {
+    pub fn new(backend: Backend) -> std::result::Result<Self, i32> {
+        Ok(Self {
             backend,
-            address: Vec::new(),
-        }
+            allocator: MediaAllocator::new(AddressRange::from_range(0, SHMEM_SIZE), Some(0x1000))?,
+        })
     }
 }
 
@@ -116,41 +125,35 @@ impl VirtioMediaHostMemoryMapper for VuBackend {
         offset: u64,
         rw: bool,
     ) -> std::result::Result<u64, i32> {
+        let shm_offset = self.allocator.allocate(length, offset)?;
         let mut msg: VhostUserBackendMapMsg = Default::default();
-        msg.shm_offset = offset;
         msg.len = length;
         msg.flags = if rw {
             VhostUserBackendMapMsgFlags::MAP_W | VhostUserBackendMapMsgFlags::MAP_R
         } else {
             VhostUserBackendMapMsgFlags::MAP_R
         };
-
-        self.address.push(AddressRange {
-            offset: msg.shm_offset,
-            length: msg.len,
-        });
+        msg.shm_offset = shm_offset;
 
         if let Err(e) = self.backend.mem_backend_map(&msg, &buffer) {
             warn!("failed to map memory buffer {}", e);
             return Err(libc::EINVAL);
         }
 
-        Ok(offset)
+        Ok(shm_offset)
     }
 
-    fn remove_mapping(&mut self, shm_offset: u64) -> std::result::Result<(), i32> {
+    fn remove_mapping(&mut self, offset: u64) -> std::result::Result<(), i32> {
         let mut msg: VhostUserBackendMapMsg = Default::default();
-        msg.shm_offset = shm_offset;
-        match self.address.iter().position(|a| a.offset == msg.shm_offset) {
-            Some(index) => {
-                let addr = self.address.swap_remove(index);
-                msg.len = addr.length;
-                self.backend
-                    .mem_backend_unmap(&msg)
-                    .map_err(|_| libc::EINVAL)?;
-            }
+        let shm_offset = self.allocator.release_containing(offset)?;
+        msg.shm_offset = shm_offset.start;
+        msg.len = match shm_offset.len() {
+            Some(len) => len,
             None => return Err(libc::EINVAL),
         };
+        self.backend
+            .mem_backend_unmap(&msg)
+            .map_err(|_| libc::EINVAL)?;
 
         Ok(())
     }
@@ -189,7 +192,6 @@ impl GuestMemoryMapping {
         })
     }
 }
-
 
 impl GuestMemoryRange for GuestMemoryMapping {
     fn as_ptr(&self) -> *const u8 {

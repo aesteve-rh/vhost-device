@@ -34,6 +34,7 @@ vm-memory = "0.16.1"
 vmm-sys-util = "0.12.1"
 ref-cast = "1.0.23"
 virtio-media = { path = "../../virtio-media/device" }
+virtio-media-ffmpeg-decoder = { path = "../../virtio-media/extras/ffmpeg-decoder" }
 #virtio-media = { git = "https://github.com/chromeos/virtio-media", rev = "0b9debe9aacd37ea12248495b116ceb6dc2e6811" }#, branch = "main" }#rev = "c84074d52fa9422baf29346f27a22f67fb470316" }
 #virtio-media = { version = "0.0.6" }
 #v4l2r = { git =  "https://github.com/Gnurou/v4l2r", branch = "master" }

@@ -10,16 +10,16 @@ use std::{
 use clap::ValueEnum;
 use log::{debug, info, warn};
 use thiserror::Error as ThisError;
-use vhost::vhost_user::{Backend, VhostUserProtocolFeatures, VhostUserVirtioFeatures};
-use vhost::vhost_user::message::VhostUserShMemConfig;
+use vhost::vhost_user::{
+    message::VhostUserShMemConfig, Backend, VhostUserProtocolFeatures, VhostUserVirtioFeatures,
+};
 use vhost_user_backend::{VhostUserBackend, VringEpollHandler, VringRwLock, VringT};
 use virtio_bindings::{
     virtio_config::{VIRTIO_F_NOTIFY_ON_EMPTY, VIRTIO_F_VERSION_1},
     virtio_ring::{VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC},
 };
 use virtio_media::{protocol::VirtioMediaDeviceConfig, VirtioMediaDevice};
-use vm_memory::{GuestMemoryAtomic, GuestMemoryLoadGuard};
-use vm_memory::mmap::GuestMemoryMmap;
+use vm_memory::{mmap::GuestMemoryMmap, GuestMemoryAtomic, GuestMemoryLoadGuard};
 use vmm_sys_util::{
     epoll::EventSet,
     eventfd::{EventFd, EFD_NONBLOCK},
@@ -41,12 +41,14 @@ pub(crate) enum BackendType {
     #[default]
     SimpleCapture,
     V4l2Proxy,
+    FfmpegDecoder,
 }
 
-const QUEUE_SIZE: usize = 256;
+const QUEUE_SIZE: usize = 1024;
 pub const NUM_QUEUES: usize = 2;
 const COMMAND_Q: u16 = 0;
 pub const EVENT_Q: u16 = 1;
+pub const SHMEM_SIZE: u64 = 1 << 32;
 
 #[derive(Debug, ThisError)]
 /// Errors related to vhost-device-media daemon.
@@ -59,6 +61,8 @@ pub(crate) enum VuMediaError {
     SendNotificationFailed,
     #[error("Can't create eventFd")]
     EventFdError,
+    #[error("Memory allocator failed")]
+    MemoryAllocatorFailed,
     #[error("Failed to handle event")]
     HandleEventNotEpollIn,
     #[error("No memory configured")]
@@ -193,7 +197,8 @@ where
                     queue: eventq.clone(),
                 },
                 VuMemoryMapper::new(thread.atomic_mem().unwrap().clone()),
-                VuBackend::new(thread.vu_req.as_ref().unwrap().clone()),
+                VuBackend::new(thread.vu_req.as_ref().unwrap().clone())
+                    .map_err(|_| VuMediaError::MemoryAllocatorFailed)?,
             )
             .unwrap();
             thread.set_media_worker(device);
@@ -258,7 +263,6 @@ where
     }
 
     fn get_shmem_config(&self) -> IoResult<VhostUserShMemConfig> {
-        //Ok(VhostUserShMemConfig::new(1, &[1 << 32]))
-        Ok(VhostUserShMemConfig::new(2, &[1 << 20, 1 << 20]))
+        Ok(VhostUserShMemConfig::new(1, &[SHMEM_SIZE]))
     }
 }

@@ -1567,6 +1567,7 @@ dependencies = [
  "vhost-user-backend 0.17.0",
  "virtio-bindings",
  "virtio-media",
+ "virtio-media-ffmpeg-decoder",
  "virtio-queue 0.14.0",
  "vm-memory 0.16.1",
  "vmm-sys-util",
@@ -1740,6 +1741,21 @@ dependencies = [
  "thiserror 1.0.56",
  "v4l2r",
  "zerocopy",
+]
+
+[[package]]
+name = "virtio-media-ffmpeg-decoder"
+version = "0.0.6"
+dependencies = [
+ "anyhow",
+ "bindgen 0.70.1",
+ "enumn",
+ "libc",
+ "log",
+ "nix 0.28.0",
+ "pkg-config",
+ "thiserror 1.0.56",
+ "virtio-media",
 ]
 
 [[package]]
