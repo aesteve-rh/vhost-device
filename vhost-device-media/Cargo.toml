@@ -11,7 +11,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-#xen = ["vm-memory/xen", "vhost/xen", "vhost-user-backend/xen"]
+default = ["v4l2-proxy"]
+v4l2-proxy = ["v4l2r"]
+ffmpeg = ["v4l2r", "virtio-media-ffmpeg-decoder"]
+simple-capture = ["v4l2r"]
 
 [dependencies]
 bitflags = "2.6.0"
@@ -31,20 +34,18 @@ vhost-user-backend = { path = "../../vhost/vhost-user-backend" }
 virtio-bindings = "0.2.4"
 virtio-queue = "0.14.0"
 vm-memory = "0.16.1"
-vmm-sys-util = "0.12.1"
+vmm-sys-util = "0.14.0"
 ref-cast = "1.0.23"
-virtio-media = { path = "../../virtio-media/device" }
-virtio-media-ffmpeg-decoder = { path = "../../virtio-media/extras/ffmpeg-decoder" }
-#virtio-media = { git = "https://github.com/chromeos/virtio-media", rev = "0b9debe9aacd37ea12248495b116ceb6dc2e6811" }#, branch = "main" }#rev = "c84074d52fa9422baf29346f27a22f67fb470316" }
-#virtio-media = { version = "0.0.6" }
-#v4l2r = { git =  "https://github.com/Gnurou/v4l2r", branch = "master" }
-#v4l2r = { version = "0.0.5", features = ["arch64"] }
-v4l2r = { path = "../../v4l2r/lib" }
-zerocopy = { version = "0.7.31", features = ["derive"] }
+virtio-media-ffmpeg-decoder = { path = "../../virtio-media/extras/ffmpeg-decoder", package = "virtio-media-ffmpeg-decoder", optional = true }
+#virtio-media-ffmpeg-decoder = { git = "https://github.com/chromeos/virtio-media/", package = "virtio-media-ffmpeg-decoder", version = "0.0.7" }
+#virtio-media  = { git = "https://github.com/chromeos/virtio-media/", rev = "b880b0f1b1ca62f4ec861552dcdf80b52b4dcbb6" }
+virtio-media = { version = "0.0.7" }
+v4l2r = { version = "0.0.7", features = ["arch64"], optional = true }
+zerocopy = { version = "0.8.25", features = ["derive"] }
 
 [dev-dependencies]
 assert_matches = "1.5.0"
-rstest = "0.23.0"
+rstest = "0.25.0"
 tempfile = "3.14.0"
-virtio-queue = { version = "0.14.0", features = ["test-utils"] }
+virtio-queue = { version = "0.15.0", features = ["test-utils"] }
 vm-memory = { version = "0.16.1", features = ["backend-mmap", "backend-atomic"] }

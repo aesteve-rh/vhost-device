@@ -9,7 +9,6 @@ use vhost::vhost_user::{
 };
 use vhost_user_backend::{VringRwLock, VringT};
 use virtio_media::{protocol::SgEntry, VirtioMediaGuestMemoryMapper};
-//#[cfg(feature = "simple-device")]
 use virtio_media::{
     protocol::{DequeueBufferEvent, ErrorEvent, SessionEvent, V4l2Event},
     GuestMemoryRange, VirtioMediaEventQueue, VirtioMediaHostMemoryMapper,

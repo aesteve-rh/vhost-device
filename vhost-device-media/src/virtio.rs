@@ -59,7 +59,7 @@ where
 {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         if let Some(current) = self.current {
-            let left_in_descriptor = current.len() - self.offset;
+            let left_in_descriptor: u32 = current.len() - self.offset;
             let to_write: u32 = min(left_in_descriptor as usize, buf.len()) as u32;
 
             let written = self
@@ -130,7 +130,7 @@ where
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if let Some(current) = self.current {
             let left_in_descriptor = current.len() - self.offset;
-            let to_read = min(left_in_descriptor, buf.len() as u32);
+            let to_read: u32 = min(left_in_descriptor, buf.len() as u32);
 
             let read = self
                 .chain

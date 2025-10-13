@@ -24,7 +24,7 @@ use vmm_sys_util::{
     epoll::EventSet,
     eventfd::{EventFd, EFD_NONBLOCK},
 };
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 use crate::{
     media_backends::{EventQueue, VuBackend, VuMemoryMapper},
@@ -36,11 +36,13 @@ pub(crate) type MediaResult<T> = std::result::Result<T, VuMediaError>;
 pub(crate) type Writer = virtio::DescriptorChainWriter<GuestMemoryLoadGuard<GuestMemoryMmap>>;
 pub(crate) type Reader = virtio::DescriptorChainReader<GuestMemoryLoadGuard<GuestMemoryMmap>>;
 
-#[derive(ValueEnum, Debug, Default, Clone, Eq, PartialEq)]
+#[derive(ValueEnum, Debug, Clone, Eq, PartialEq)]
 pub(crate) enum BackendType {
-    #[default]
+    #[cfg(feature = "simple-capture")]
     SimpleCapture,
+    #[cfg(feature = "v4l2-proxy")]
     V4l2Proxy,
+    #[cfg(feature = "ffmpeg")]
     FfmpegDecoder,
 }
 
@@ -170,7 +172,10 @@ where
     fn update_memory(&self, mem: GuestMemoryAtomic<GuestMemoryMmap>) -> IoResult<()> {
         info!("Memory updated - guest probably booting");
         for thread in self.threads.iter() {
-            thread.lock().unwrap().mem = Some(mem.clone());
+            match thread.try_lock() {
+                Err(_) => warn!("Thread locked, memory update failed"),
+                Ok(mut t) => t.mem =  Some(mem.clone()),
+            }
         }
         Ok(())
     }
