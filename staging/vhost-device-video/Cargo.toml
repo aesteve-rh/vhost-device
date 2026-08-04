@@ -30,7 +30,7 @@ vhost = { workspace = true }
 vhost-user-backend = { workspace = true }
 virtio-bindings = { workspace = true }
 virtio-queue = { workspace = true }
-vm-memory = { workspace = true }
+vm-memory = { workspace = true, features = ["backend-mmap", "backend-atomic"] }
 vmm-sys-util = { workspace = true }
 v4l2r = { git =  "https://github.com/Gnurou/v4l2r", rev = "110fd77", optional = true }
 
